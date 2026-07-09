@@ -40,6 +40,69 @@ mm_return_vm_page_to_kernel(void *vm_page, int units) {
     }
 }
 
+static void 
+mm_union_free_blocks
+    (block_meta_data_t *first,
+    block_meta_data_t *second) {
+        assert(first->is_free == MM_TRUE && second->is_free == MM_TRUE && "Error : Both blocks must be free to merge.");
+        first->next_block = second->next_block;
+        if(first->next_block) {
+            first->next_block->prev_block = first;
+        }
+        first->block_size += sizeof(block_meta_data_t) + second->block_size;
+}
+
+
+static inline uint32_t
+mm_max_page_allocatable_memory (int units) {
+    return (uint32_t)(units*SYSTEM_PAGE_SIZE - offset_of(vm_page_t, page_memory));
+}
+
+vm_page_t *
+allocate_vm_page (vm_page_family_t *vm_page_family) {
+    vm_page_t *vm_page = (vm_page_t *) mm_get_new_vm_page_from_kernel(1);
+    /*Initialize lower most META block of the VM page*/
+    MARK_VM_PAGE_EMPTY(vm_page);
+    vm_page->block_meta_data.block_size = mm_max_page_allocatable_memory(1);
+    vm_page->block_meta_data.offset = offset_of(vm_page_t, block_meta_data);
+    vm_page->next = NULL;
+    vm_page->prev = NULL;
+    /*Set the back pointer to the page family*/
+    vm_page->page_family = vm_page_family;
+    /*If it is a first VM data page for a given page family*/
+    if(!vm_page_family->first_page) {
+        vm_page_family->first_page = vm_page;
+        return vm_page;
+    }
+
+    vm_page->next = vm_page_family->first_page;
+    vm_page_family->first_page->prev = vm_page;
+    vm_page_family->first_page = vm_page;
+    
+    return vm_page;
+}
+
+void
+mm_vm_page_delete_and_free (vm_page_t *vm_page) {
+    if(!vm_page) {
+        return;
+    }
+    vm_page_family_t *vm_page_family = vm_page->page_family;
+    if(vm_page->prev) {
+        vm_page->prev->next = vm_page->next;   
+    }
+    if(vm_page->next) {
+        vm_page->next->prev = vm_page->prev;
+    }
+
+    if(vm_page_family->first_page == vm_page) {
+        vm_page_family->first_page = vm_page->next;
+    }
+    vm_page->next = NULL;
+    vm_page->prev = NULL;
+    mm_return_vm_page_to_kernel((void *)vm_page, 1);
+}
+
 void mm_instantiate_new_page_family(
     char *struct_name, 
     uint32_t struct_size) {
@@ -183,16 +246,22 @@ void mm_audit_meta_blocks(block_meta_data_t *first_meta_block) {
            allocated_block_count, largest_alloc_size, (void*)largest_alloc_block);
 }
 
-static void 
-mm_union_free_blocks
-    (block_meta_data_t *first,
-    block_meta_data_t *second) {
-        assert(first->is_free == MM_TRUE && second->is_free == MM_TRUE && "Error : Both blocks must be free to merge.");
-        first->next_block = second->next_block;
-        if(first->next_block) {
-            first->next_block->prev_block = first;
-        }
-        first->block_size += sizeof(block_meta_data_t) + second->block_size;
+vm_bool_t
+mm_is_vm_page_empty (vm_page_t *vm_page) {
+    if(!vm_page) {
+        return MM_FALSE;
+    }
+
+    block_meta_data_t first_meta_block = vm_page->block_meta_data;
+    if(first_meta_block.prev_block == NULL &&
+        first_meta_block.next_block == NULL&&
+        first_meta_block.is_free == MM_TRUE) {
+        return MM_TRUE;
+    }
+
+    return MM_FALSE;
 }
+
+
 
 
